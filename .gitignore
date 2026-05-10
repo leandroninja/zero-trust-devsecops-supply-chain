@@ -1,0 +1,140 @@
+# ─── Python ───────────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+ENV/
+.venv/
+build/
+dist/
+*.egg-info/
+.eggs/
+pip-log.txt
+pip-delete-this-directory.txt
+.tox/
+.coverage
+.coverage.*
+.cache
+coverage.xml
+*.cover
+.hypothesis/
+*.pyc
+.pytest_cache/
+htmlcov/
+.mypy_cache/
+.ruff_cache/
+
+# ─── Terraform ────────────────────────────────────────────────────────────────
+.terraform/
+.terraform.lock.hcl
+*.tfstate
+*.tfstate.backup
+*.tfstate.*.backup
+terraform.tfvars           # pode conter valores sensíveis
+*.auto.tfvars
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+.terraformrc
+terraform.rc
+# Planos de Terraform nunca devem ser commitados — podem ter dados sensíveis
+*.tfplan
+*.plan
+
+# ─── Segurança — NUNCA commitar ───────────────────────────────────────────────
+.env
+.env.*
+.env.local
+.env.production
+*.key
+*.pem
+*.crt
+*.cer
+*.pfx
+*.p12
+*.jks
+*.keystore
+secrets/
+secret/
+credentials/
+credentials.json
+service-account.json
+*-sa.json
+*-credentials.json
+.aws/credentials
+.azure/credentials
+kubeconfig
+*.kubeconfig
+kube-config.yaml
+
+# Chaves privadas e tokens
+id_rsa
+id_ed25519
+*.priv
+*.private
+cosign.key            # chave privada do Cosign — usar keyless em produção
+signing.key
+
+# ─── SBOM output — gerado localmente, não deve ir para o repo ─────────────────
+sbom-output/
+# (os SBOMs de release vão como GitHub Release assets, não no repo)
+
+# ─── Relatórios de scan ───────────────────────────────────────────────────────
+# Gerados pela pipeline — artifacts do GitHub Actions, não do repo
+trivy-results.*
+semgrep.*
+gitleaks-report.*
+hadolint-results.*
+checkov-*.sarif
+zap-report.*
+licenses-*.json
+vulnerabilities.json
+sbom-checksums.sha256
+
+# ─── IDEs e editores ──────────────────────────────────────────────────────────
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+.project
+.classpath
+.settings/
+
+# ─── Logs ─────────────────────────────────────────────────────────────────────
+*.log
+logs/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# ─── Node.js (se houver frontend) ─────────────────────────────────────────────
+node_modules/
+npm-debug.log
+yarn-debug.log
+yarn-error.log
+.npm
+.yarn-integrity
+.pnp.*
+
+# ─── Docker ───────────────────────────────────────────────────────────────────
+# Imagens locais — não commitar tarballs de imagem Docker
+*.tar.gz
+*.tar
+
+# ─── Misc ─────────────────────────────────────────────────────────────────────
+*.tmp
+*.temp
+.tmp/
+tmp/
+temp/
