@@ -1,0 +1,25 @@
+# Dependências da aplicação — versões fixadas para reproducibilidade
+# e para que o Trivy/Grype consigam encontrar CVEs por versão exata.
+#
+# Para atualizar: pip install pip-review && pip-review --auto
+# Sempre rodar o pipeline após atualizar — pode ter CVEs nas novas versões.
+
+# Framework web assíncrono
+fastapi==0.110.0
+
+# Servidor ASGI para FastAPI
+uvicorn[standard]==0.27.1
+
+# Validação de dados — vem como dependência do FastAPI mas pinado explicitamente
+pydantic==2.6.1
+
+# JWT — python-jose com suporte a criptografia
+# [cryptography] inclui backend para RS256/ES256 (necessário para prod)
+python-jose[cryptography]==3.3.0
+
+# Dependências transitivas relevantes — pinadas para evitar surpresas
+# (versões indiretamente impostas pelo pip mas declaradas explicitamente)
+cryptography==42.0.4
+anyio==4.3.0
+starlette==0.36.3
+httpx==0.27.0  # para testes de integração
