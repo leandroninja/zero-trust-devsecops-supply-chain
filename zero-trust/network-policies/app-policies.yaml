@@ -1,0 +1,200 @@
+# NetworkPolicy: Políticas específicas por workload
+#
+# Regras de allow seletivo para cada serviço.
+# Cada pod só recebe tráfego de quem realmente precisa enviar.
+#
+# Fluxo esperado:
+#   Internet → Ingress Controller → API → Database
+#                               → Cache (Redis)
+#
+# Nada fora desse fluxo é permitido.
+
+---
+# API: recebe tráfego apenas do ingress-controller
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-ingress-to-api
+  namespace: production
+  labels:
+    security.zero-trust/layer: network
+    app: api
+spec:
+  podSelector:
+    matchLabels:
+      app: zero-trust-app
+      tier: api
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    # Só aceita de pods com label de ingress controller
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: ingress-nginx
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: ingress-nginx
+      ports:
+        - protocol: TCP
+          port: 8080
+
+    # Permite health checks do kubelet (necessário para liveness/readiness probes)
+    # O kubelet não tem um namespace selector — permite do node IP
+    - ports:
+        - protocol: TCP
+          port: 8080
+
+  egress:
+    # API pode se comunicar com o banco de dados
+    - to:
+        - podSelector:
+            matchLabels:
+              app: zero-trust-app
+              tier: database
+      ports:
+        - protocol: TCP
+          port: 5432  # PostgreSQL
+
+    # API pode se comunicar com Redis (cache)
+    - to:
+        - podSelector:
+            matchLabels:
+              app: zero-trust-app
+              tier: cache
+      ports:
+        - protocol: TCP
+          port: 6379
+
+    # Egress para DNS (já coberto pelo allow-dns, mas explicitado aqui por clareza)
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+
+---
+# Database: recebe tráfego APENAS da API
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-api-to-database
+  namespace: production
+  labels:
+    security.zero-trust/layer: network
+    app: database
+  annotations:
+    security.zero-trust/reason: "Banco só aceita conexões da API — sem acesso direto externo"
+spec:
+  podSelector:
+    matchLabels:
+      app: zero-trust-app
+      tier: database
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    # Só aceita da API no mesmo namespace
+    - from:
+        - podSelector:
+            matchLabels:
+              app: zero-trust-app
+              tier: api
+      ports:
+        - protocol: TCP
+          port: 5432
+
+  egress:
+    # DB não faz chamadas externas — só DNS
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+      ports:
+        - protocol: UDP
+          port: 53
+
+---
+# Redis/Cache: recebe tráfego apenas da API
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-api-to-cache
+  namespace: production
+  labels:
+    security.zero-trust/layer: network
+    app: cache
+spec:
+  podSelector:
+    matchLabels:
+      app: zero-trust-app
+      tier: cache
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app: zero-trust-app
+              tier: api
+      ports:
+        - protocol: TCP
+          port: 6379
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+      ports:
+        - protocol: UDP
+          port: 53
+
+---
+# Ingress Controller: pode receber de qualquer IP externo
+# mas só envia para pods da API
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-ingress-controller
+  namespace: ingress-nginx
+  labels:
+    security.zero-trust/layer: network
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: ingress-nginx
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    # Recebe tráfego externo nas portas 80 e 443
+    - ports:
+        - protocol: TCP
+          port: 80
+        - protocol: TCP
+          port: 443
+  egress:
+    # Encaminha apenas para namespaces de aplicação
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              zero-trust/env: production
+      ports:
+        - protocol: TCP
+          port: 8080
+    # DNS
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53

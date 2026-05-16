@@ -1,0 +1,63 @@
+# NetworkPolicy: Default Deny All
+#
+# Princípio Zero Trust — nenhum tráfego é permitido por padrão.
+# Toda comunicação precisa ser explicitamente autorizada.
+#
+# Aplicar PRIMEIRO, antes de qualquer policy de allow.
+# Se aplicar na ordem errada, serviços ficam sem acesso ao DNS e param.
+#
+# Referência: LFS183 Zero Trust — Network Layer
+
+---
+# Bloqueia TODO ingress e egress no namespace production
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-all
+  namespace: production
+  labels:
+    security.zero-trust/layer: network
+    security.zero-trust/policy: deny-all
+  annotations:
+    security.zero-trust/reason: "Zero Trust baseline — deny all before allowing specific traffic"
+    security.zero-trust/owner: "platform-team"
+spec:
+  podSelector: {}  # seleciona TODOS os pods do namespace
+  policyTypes:
+    - Ingress
+    - Egress
+  # Sem regras de ingress/egress = tudo bloqueado
+
+---
+# Mesma política para namespace staging
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-all
+  namespace: staging
+  labels:
+    security.zero-trust/layer: network
+    security.zero-trust/policy: deny-all
+  annotations:
+    security.zero-trust/reason: "Zero Trust baseline — deny all before allowing specific traffic"
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+    - Egress
+
+---
+# Namespace de aplicação (app)
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-all
+  namespace: app
+  labels:
+    security.zero-trust/layer: network
+    security.zero-trust/policy: deny-all
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+    - Egress

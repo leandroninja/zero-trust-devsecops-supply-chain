@@ -1,0 +1,94 @@
+# NetworkPolicy: Allow DNS
+#
+# Depois do deny-all, a primeira coisa a liberar é DNS.
+# Sem isso, os pods não conseguem resolver nomes de serviço
+# e tudo para de funcionar — mesmo que o tráfego TCP esteja liberado.
+#
+# DNS no Kubernetes roda no namespace kube-system como kube-dns / CoreDNS.
+# Porta 53 UDP (principal) e TCP (para respostas grandes).
+#
+# Aplica em todos os namespaces que têm o deny-all.
+
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-dns-egress
+  namespace: production
+  labels:
+    security.zero-trust/layer: network
+    security.zero-trust/policy: allow-dns
+  annotations:
+    security.zero-trust/reason: "DNS é necessário para resolução de nomes de serviço — mínimo obrigatório"
+spec:
+  podSelector: {}  # todos os pods do namespace
+  policyTypes:
+    - Egress
+  egress:
+    # Permite saída para o CoreDNS no kube-system
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53  # fallback TCP para respostas > 512 bytes
+
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-dns-egress
+  namespace: staging
+  labels:
+    security.zero-trust/layer: network
+    security.zero-trust/policy: allow-dns
+spec:
+  podSelector: {}
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-dns-egress
+  namespace: app
+  labels:
+    security.zero-trust/layer: network
+    security.zero-trust/policy: allow-dns
+spec:
+  podSelector: {}
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53

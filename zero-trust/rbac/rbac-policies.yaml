@@ -1,0 +1,219 @@
+# Kubernetes RBAC — Princípio de Menor Privilégio
+#
+# Cada service account só tem acesso ao que precisa para funcionar.
+# Nenhum "default" service account com permissões amplas.
+# ClusterAdmin só para a equipe de plataforma, com auditoria.
+#
+# Referência: LFS183 Zero Trust — Identity Layer
+#             CIS Kubernetes Benchmark — seção 5.1
+
+---
+# ── SERVICE ACCOUNTS ──────────────────────────────────────────────
+
+# Service Account para a API da aplicação
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: api-service-account
+  namespace: production
+  labels:
+    app: zero-trust-app
+    tier: api
+  annotations:
+    security.zero-trust/role: "api"
+    security.zero-trust/least-privilege: "true"
+automountServiceAccountToken: false  # não monta token automaticamente — RBAC explícito
+
+---
+# Service Account para o banco de dados
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: database-service-account
+  namespace: production
+  labels:
+    app: zero-trust-app
+    tier: database
+automountServiceAccountToken: false
+
+---
+# Service Account para workers/jobs de background
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: worker-service-account
+  namespace: production
+  labels:
+    app: zero-trust-app
+    tier: worker
+automountServiceAccountToken: false
+
+---
+# ── ROLES (escopo de namespace) ────────────────────────────────────
+
+# Role para a API — só pode ler ConfigMaps e Secrets próprios
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: api-role
+  namespace: production
+  labels:
+    app: zero-trust-app
+rules:
+  # Pode ler ConfigMaps com configuração da aplicação
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    resourceNames: ["app-config", "feature-flags"]
+    verbs: ["get", "list", "watch"]
+
+  # Pode ler seus próprios secrets (credenciais de banco, etc)
+  # Nunca list/watch em secrets — exporia os nomes de outros secrets
+  - apiGroups: [""]
+    resources: ["secrets"]
+    resourceNames: ["app-db-credentials", "app-jwt-secret"]
+    verbs: ["get"]
+
+  # Pode ler seu próprio pod info (pra health checks e métricas)
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get"]
+    resourceNames: []  # TODO: restringir por nome quando workload name for estável
+
+---
+# Role para workers — acesso a jobs e cronjobs próprios
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: worker-role
+  namespace: production
+rules:
+  - apiGroups: ["batch"]
+    resources: ["jobs"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    resourceNames: ["worker-config"]
+    verbs: ["get"]
+
+---
+# Role de somente leitura para equipe de desenvolvimento
+# (acesso a produção para debug — sem capacidade de alterar)
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: dev-readonly
+  namespace: production
+rules:
+  - apiGroups: [""]
+    resources: ["pods", "pods/log", "services", "configmaps", "events"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["apps"]
+    resources: ["deployments", "replicasets"]
+    verbs: ["get", "list", "watch"]
+  # NÃO tem acesso a secrets — desenvolvedor não precisa ver credentials de produção
+
+---
+# ── ROLEBINDINGS ───────────────────────────────────────────────────
+
+# Vincula a Role da API à ServiceAccount da API
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: api-rolebinding
+  namespace: production
+subjects:
+  - kind: ServiceAccount
+    name: api-service-account
+    namespace: production
+roleRef:
+  kind: Role
+  name: api-role
+  apiGroup: rbac.authorization.k8s.io
+
+---
+# Vincula worker role ao worker service account
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: worker-rolebinding
+  namespace: production
+subjects:
+  - kind: ServiceAccount
+    name: worker-service-account
+    namespace: production
+roleRef:
+  kind: Role
+  name: worker-role
+  apiGroup: rbac.authorization.k8s.io
+
+---
+# ── CLUSTER ROLES (escopo de cluster) ─────────────────────────────
+
+# ClusterRole de leitura para o time de plataforma (SRE)
+# Pode ver tudo mas não modificar
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: platform-sre-readonly
+  labels:
+    security.zero-trust/role: sre-readonly
+rules:
+  - apiGroups: [""]
+    resources:
+      - nodes
+      - namespaces
+      - pods
+      - pods/log
+      - services
+      - endpoints
+      - persistentvolumes
+      - persistentvolumeclaims
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["apps"]
+    resources: ["deployments", "daemonsets", "statefulsets", "replicasets"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["networking.k8s.io"]
+    resources: ["networkpolicies", "ingresses"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["security.istio.io"]
+    resources: ["*"]
+    verbs: ["get", "list", "watch"]
+  # Sem acesso a secrets no cluster — via Vault se precisar
+
+---
+# ClusterRole para o agente de CI/CD (GitHub Actions via OIDC)
+# Só pode atualizar imagens de deployment — sem acesso a outros recursos
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: cicd-deploy
+  labels:
+    security.zero-trust/role: cicd
+  annotations:
+    security.zero-trust/reason: "Acesso mínimo para CI/CD — só atualiza deployments de aplicação"
+rules:
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    verbs: ["get", "list", "patch", "update"]
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list"]
+  - apiGroups: [""]
+    resources: ["services"]
+    verbs: ["get", "list"]
+
+---
+# ClusterRoleBinding — time SRE
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: platform-sre-readonly-binding
+subjects:
+  # Grupo de usuários SRE (gerenciado via Azure AD / OIDC)
+  - kind: Group
+    name: "platform-sre-team"
+    apiGroup: rbac.authorization.k8s.io
+roleRef:
+  kind: ClusterRole
+  name: platform-sre-readonly
+  apiGroup: rbac.authorization.k8s.io
