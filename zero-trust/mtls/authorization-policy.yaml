@@ -1,0 +1,149 @@
+# Istio AuthorizationPolicy
+#
+# Define QUEM pode falar com QUEM dentro da mesh.
+# Mesmo com mTLS (que autentica), ainda precisamos autorizar.
+# Autenticação ≠ Autorização — esse é um erro comum.
+#
+# Principal = identidade SPIFFE do workload (ex: cluster.local/ns/production/sa/api-service)
+# A identidade vem do certificado mTLS gerado pelo Istio CA.
+#
+# Regra base: deny-all por padrão, libera só o necessário.
+
+---
+# Deny all no namespace production por padrão
+# AuthorizationPolicy vazia com action DENY = bloqueia tudo que não tem allow explícito
+apiVersion: security.istio.io/v1beta1
+kind: AuthorizationPolicy
+metadata:
+  name: deny-all-default
+  namespace: production
+  labels:
+    security.zero-trust/layer: workload
+    security.zero-trust/policy: deny-all
+  annotations:
+    security.zero-trust/reason: "Deny default — toda autorização precisa ser explícita"
+spec:
+  {}  # sem selector = aplica em todos os pods; sem rules = deny all
+
+---
+# Permite que o ingress-nginx acesse a API
+apiVersion: security.istio.io/v1beta1
+kind: AuthorizationPolicy
+metadata:
+  name: allow-ingress-to-api
+  namespace: production
+  labels:
+    security.zero-trust/layer: workload
+spec:
+  selector:
+    matchLabels:
+      app: zero-trust-app
+      tier: api
+  action: ALLOW
+  rules:
+    - from:
+        - source:
+            # Principal SPIFFE do ingress controller
+            principals:
+              - "cluster.local/ns/ingress-nginx/sa/ingress-nginx"
+      to:
+        - operation:
+            methods: ["GET", "POST", "PUT", "DELETE", "PATCH"]
+            ports: ["8080"]
+
+---
+# API pode acessar o banco de dados
+apiVersion: security.istio.io/v1beta1
+kind: AuthorizationPolicy
+metadata:
+  name: allow-api-to-database
+  namespace: production
+  labels:
+    security.zero-trust/layer: workload
+spec:
+  selector:
+    matchLabels:
+      app: zero-trust-app
+      tier: database
+  action: ALLOW
+  rules:
+    - from:
+        - source:
+            principals:
+              - "cluster.local/ns/production/sa/api-service-account"
+      to:
+        - operation:
+            ports: ["5432"]
+
+---
+# API pode acessar o cache Redis
+apiVersion: security.istio.io/v1beta1
+kind: AuthorizationPolicy
+metadata:
+  name: allow-api-to-cache
+  namespace: production
+  labels:
+    security.zero-trust/layer: workload
+spec:
+  selector:
+    matchLabels:
+      app: zero-trust-app
+      tier: cache
+  action: ALLOW
+  rules:
+    - from:
+        - source:
+            principals:
+              - "cluster.local/ns/production/sa/api-service-account"
+      to:
+        - operation:
+            ports: ["6379"]
+
+---
+# Prometheus pode fazer scraping de métricas
+# (endpoints /metrics não precisam de auth no sentido de aplicação,
+#  mas precisam de autorização Istio)
+apiVersion: security.istio.io/v1beta1
+kind: AuthorizationPolicy
+metadata:
+  name: allow-prometheus-scraping
+  namespace: production
+  labels:
+    security.zero-trust/layer: workload
+spec:
+  selector:
+    matchLabels:
+      app: zero-trust-app
+  action: ALLOW
+  rules:
+    - from:
+        - source:
+            principals:
+              - "cluster.local/ns/monitoring/sa/prometheus"
+      to:
+        - operation:
+            methods: ["GET"]
+            paths: ["/metrics"]
+            ports: ["9090"]
+
+---
+# Deny explícito para service accounts sem autorização
+# (camada extra além do deny-all — explícito é melhor que implícito)
+apiVersion: security.istio.io/v1beta1
+kind: AuthorizationPolicy
+metadata:
+  name: deny-unknown-sources
+  namespace: production
+  labels:
+    security.zero-trust/layer: workload
+spec:
+  action: DENY
+  rules:
+    - from:
+        - source:
+            # Nega qualquer um que não tenha um principal SPIFFE válido
+            notPrincipals:
+              - "cluster.local/ns/production/sa/api-service-account"
+              - "cluster.local/ns/ingress-nginx/sa/ingress-nginx"
+              - "cluster.local/ns/monitoring/sa/prometheus"
+              - "cluster.local/ns/production/sa/default"

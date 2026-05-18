@@ -1,0 +1,216 @@
+# SPIFFE / SPIRE Configuration
+#
+# SPIFFE (Secure Production Identity Framework for Everyone) provê
+# identidade criptográfica para workloads — independente de onde rodam.
+#
+# SPIRE é a implementação de referência do SPIFFE.
+# Cada workload recebe um SVID (SPIFFE Verifiable Identity Document)
+# que é um certificado X.509 ou JWT com identidade verificável.
+#
+# Trust Domain: zero-trust-app.example.com
+#
+# Referência: LFS183 Zero Trust — Identity Layer
+#             https://spiffe.io/docs/
+
+---
+# ConfigMap com configuração do SPIRE Server
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: spire-server-config
+  namespace: spire
+  labels:
+    security.zero-trust/component: spire-server
+data:
+  server.conf: |
+    server {
+      # Bind address do servidor SPIRE
+      bind_address = "0.0.0.0"
+      bind_port = "8081"
+
+      # Trust domain — identificador único da organização/cluster
+      trust_domain = "zero-trust-app.example.com"
+
+      # Diretório de dados do servidor
+      data_dir = "/run/spire/data"
+
+      # Validade dos SVIDs (certificados de workload)
+      # Curto pra forçar rotação frequente — princípio de menor janela de exposição
+      default_x509_svid_ttl = "1h"
+      default_jwt_svid_ttl = "5m"
+
+      # CA do cluster — o servidor SPIRE é a CA interna
+      ca_ttl = "24h"
+      ca_subject {
+        country = ["BR"]
+        organization = ["ZeroTrustApp"]
+        common_name = "SPIRE CA"
+      }
+    }
+
+    plugins {
+      # DataStore — onde o servidor guarda os registros
+      DataStore "sql" {
+        plugin_data {
+          database_type = "sqlite3"
+          connection_string = "/run/spire/data/datastore.sqlite3"
+          # TODO: trocar por PostgreSQL em produção real
+        }
+      }
+
+      # NodeAttestor — como os nodes se autenticam no servidor SPIRE
+      # Usando Azure MSI (Managed Service Identity) para AKS
+      NodeAttestor "azure_msi" {
+        plugin_data {
+          tenants {
+            # Tenant ID do Azure — configurar via secret/env
+            "${AZURE_TENANT_ID}" {
+              resource_id = "https://management.azure.com/"
+            }
+          }
+        }
+      }
+
+      # Alternativa de attestor para desenvolvimento local (usando join token)
+      # NodeAttestor "join_token" {
+      #   plugin_data {}
+      # }
+
+      # KeyManager — onde as chaves privadas são armazenadas
+      KeyManager "disk" {
+        plugin_data {
+          keys_path = "/run/spire/data/keys.json"
+          # TODO: trocar por Azure Key Vault HSM em produção
+        }
+      }
+
+      # Notifier — notifica outros sistemas quando CRL é atualizado
+      Notifier "k8sbundle" {
+        plugin_data {
+          namespace = "spire"
+          config_map = "spire-bundle"
+        }
+      }
+    }
+
+    # Controle de acesso à API do servidor SPIRE
+    # Apenas o agente SPIRE e admins podem acessar
+    health_checks {
+      listener_enabled = true
+      bind_address = "0.0.0.0"
+      bind_port = "8080"
+      live_path = "/live"
+      ready_path = "/ready"
+    }
+
+---
+# ConfigMap com configuração do SPIRE Agent (roda em cada node)
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: spire-agent-config
+  namespace: spire
+  labels:
+    security.zero-trust/component: spire-agent
+data:
+  agent.conf: |
+    agent {
+      data_dir = "/run/spire"
+      log_level = "INFO"
+      trust_domain = "zero-trust-app.example.com"
+
+      # Endereço do servidor SPIRE (dentro do cluster)
+      server_address = "spire-server.spire.svc.cluster.local"
+      server_port = "8081"
+
+      # Socket pelo qual os workloads se comunicam com o agente
+      socket_path = "/run/spire/sockets/agent.sock"
+
+      # Renovação automática de SVIDs antes do vencimento
+      # Renova quando restam 30% do tempo de vida
+      sds {
+        default_svid_name = "default"
+        default_bundle_name = "ROOTCA"
+      }
+    }
+
+    plugins {
+      NodeAttestor "azure_msi" {
+        plugin_data {
+          resource_id = "https://management.azure.com/"
+        }
+      }
+
+      KeyManager "memory" {
+        plugin_data {}
+      }
+
+      WorkloadAttestor "k8s" {
+        plugin_data {
+          # Caminho do socket do kubelet no node
+          skip_kubelet_verification = false
+          node_name_env = "MY_NODE_NAME"
+        }
+      }
+    }
+
+---
+# Registros de workload — diz ao SPIRE qual SPIFFE ID atribuir a cada pod
+# O selector define como identificar o workload (namespace + service account)
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: spire-workload-registrations
+  namespace: spire
+  labels:
+    security.zero-trust/component: workload-registration
+data:
+  registrations.json: |
+    [
+      {
+        "spiffe_id": "spiffe://zero-trust-app.example.com/production/api",
+        "parent_id": "spiffe://zero-trust-app.example.com/node",
+        "selectors": [
+          {"type": "k8s", "value": "ns:production"},
+          {"type": "k8s", "value": "sa:api-service-account"}
+        ],
+        "ttl": 3600,
+        "admin": false,
+        "downstream": false,
+        "dns_names": ["api.production.svc.cluster.local"]
+      },
+      {
+        "spiffe_id": "spiffe://zero-trust-app.example.com/production/database",
+        "parent_id": "spiffe://zero-trust-app.example.com/node",
+        "selectors": [
+          {"type": "k8s", "value": "ns:production"},
+          {"type": "k8s", "value": "sa:database-service-account"}
+        ],
+        "ttl": 3600
+      },
+      {
+        "spiffe_id": "spiffe://zero-trust-app.example.com/production/worker",
+        "parent_id": "spiffe://zero-trust-app.example.com/node",
+        "selectors": [
+          {"type": "k8s", "value": "ns:production"},
+          {"type": "k8s", "value": "sa:worker-service-account"}
+        ],
+        "ttl": 3600
+      }
+    ]
+
+---
+# Bundle ConfigMap — certificados de CA distribuídos para todos os namespaces
+# Os workloads usam esse bundle para validar SVIDs de outros workloads
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: spire-bundle
+  namespace: spire
+  labels:
+    security.zero-trust/component: trust-bundle
+  annotations:
+    security.zero-trust/reason: "CA bundle distribuído — atualizado automaticamente pelo SPIRE server"
+data:
+  # Populado automaticamente pelo notifier k8sbundle do SPIRE server
+  bundle.crt: ""

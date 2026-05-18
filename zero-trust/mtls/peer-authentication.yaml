@@ -1,0 +1,79 @@
+# Istio PeerAuthentication — mTLS STRICT
+#
+# Com mTLS STRICT, todo tráfego pod-a-pod precisa ser autenticado
+# via certificado mútuo. Sem certificado válido = conexão rejeitada.
+#
+# O Istio sidecar (Envoy) intercepta o tráfego e faz a handshake TLS
+# automaticamente — a aplicação não precisa saber que existe mTLS.
+#
+# Pré-requisito: Istio instalado no cluster com injeção de sidecar ativa.
+#
+# Referência: LFS183 Zero Trust — Workload Identity Layer
+
+---
+# Policy global — aplica para toda a mesh
+apiVersion: security.istio.io/v1beta1
+kind: PeerAuthentication
+metadata:
+  name: default-strict-mtls
+  namespace: istio-system  # namespace istio-system = política global
+  labels:
+    security.zero-trust/layer: workload
+    security.zero-trust/mechanism: mtls
+  annotations:
+    security.zero-trust/reason: "mTLS STRICT garante que todo tráfego na mesh seja autenticado e criptografado"
+spec:
+  mtls:
+    mode: STRICT  # STRICT = rejeita conexões sem mTLS; PERMISSIVE = aceita os dois (só pra migração)
+
+---
+# Policy específica para namespace production
+# (sobrescreve a global se necessário — mesma configuração aqui)
+apiVersion: security.istio.io/v1beta1
+kind: PeerAuthentication
+metadata:
+  name: strict-mtls-production
+  namespace: production
+  labels:
+    security.zero-trust/layer: workload
+    security.zero-trust/mechanism: mtls
+spec:
+  mtls:
+    mode: STRICT
+
+---
+# Policy para namespace staging
+# Staging usa STRICT também — não queremos comportamentos diferentes entre ambientes
+apiVersion: security.istio.io/v1beta1
+kind: PeerAuthentication
+metadata:
+  name: strict-mtls-staging
+  namespace: staging
+  labels:
+    security.zero-trust/layer: workload
+    security.zero-trust/mechanism: mtls
+spec:
+  mtls:
+    mode: STRICT
+
+---
+# Exception: health checks do kubelet não passam pelo Envoy
+# Precisamos liberar a porta de health check sem mTLS
+# (o kubelet chama diretamente, sem certificado Istio)
+apiVersion: security.istio.io/v1beta1
+kind: PeerAuthentication
+metadata:
+  name: allow-healthcheck-without-mtls
+  namespace: production
+  labels:
+    security.zero-trust/layer: workload
+spec:
+  selector:
+    matchLabels:
+      app: zero-trust-app
+  mtls:
+    mode: STRICT
+  portLevelMtls:
+    # Porta de health check — sem mTLS (kubelet não tem certificado Istio)
+    8081:
+      mode: DISABLE
