@@ -1,0 +1,231 @@
+# Política de Licenças de Software
+#
+# Define quais licenças são permitidas, precisam de revisão ou são bloqueadas.
+# Essa política é aplicada automaticamente na pipeline e no dependency-review.
+#
+# Última revisão: 2024-01
+# Revisado por: Leandro Oliveira Moraes (Arquitetura) + time jurídico
+#
+# Referência: LFC191 — Open Source Licensing
+#             EU Cyber Resilience Act — Article 13 (SBOM requirements)
+
+---
+policy_version: "1.2"
+policy_name: "zero-trust-app-license-policy"
+effective_date: "2024-01-01"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# LICENÇAS APROVADAS
+# Podem ser usadas livremente sem revisão adicional.
+# ─────────────────────────────────────────────────────────────────────────────
+approved:
+  - id: "MIT"
+    name: "MIT License"
+    reason: >
+      Permissiva. Permite uso, modificação e distribuição com e sem fins
+      comerciais. Única obrigação: manter o aviso de copyright.
+      Compatível com código proprietário.
+
+  - id: "Apache-2.0"
+    name: "Apache License 2.0"
+    reason: >
+      Permissiva com cláusula de patentes. Protege usuários contra
+      litígios de patentes do contribuidor original. Muito usada em
+      software corporativo e cloud. Compatível com GPL v3.
+
+  - id: "BSD-2-Clause"
+    name: "BSD 2-Clause License (Simplified)"
+    reason: >
+      Similar ao MIT. Permissiva, requer apenas manutenção do copyright
+      e disclaimer. Sem cláusula de publicidade (diferente da BSD-4-Clause).
+
+  - id: "BSD-3-Clause"
+    name: "BSD 3-Clause License (New/Revised)"
+    reason: >
+      Adiciona cláusula proibindo uso do nome do projeto para endosso
+      sem permissão. Ainda permissiva e compatível com código proprietário.
+
+  - id: "ISC"
+    name: "ISC License"
+    reason: >
+      Funcionalmente equivalente ao MIT simplificado. Muito usada em
+      software BSD e Node.js ecosystem. Aprovada pela OSI.
+
+  - id: "0BSD"
+    name: "BSD Zero Clause License"
+    reason: >
+      Domínio público efetivo. Nenhuma obrigação — nem copyright notice.
+      Extremamente permissiva.
+
+  - id: "Unlicense"
+    name: "The Unlicense"
+    reason: >
+      Dedicação ao domínio público. Sem restrições de qualquer tipo.
+
+  - id: "CC0-1.0"
+    name: "Creative Commons Zero v1.0 Universal"
+    reason: >
+      Waiver de direitos autorais para domínio público. Aprovado para
+      código-fonte pela OSI. Comum em datasets e documentação.
+
+  - id: "Python-2.0"
+    name: "Python Software Foundation License 2.0"
+    reason: >
+      Licença da PSF para Python e stdlib. Permissiva, compatível com
+      uso comercial.
+
+# ─────────────────────────────────────────────────────────────────────────────
+# LICENÇAS QUE REQUEREM REVISÃO JURÍDICA
+# Podem ser usadas, mas precisam de análise antes de cada uso.
+# Não bloqueiam automaticamente — geram alerta na pipeline.
+# ─────────────────────────────────────────────────────────────────────────────
+requires_review:
+  - id: "LGPL-2.1"
+    name: "GNU Lesser General Public License v2.1"
+    reason: >
+      Copyleft "fraco" — o copyleft se aplica apenas à biblioteca LGPL em si,
+      não ao código que a usa (se usada como biblioteca dinâmica). Requer
+      análise de como a dependência é linkada (static vs dynamic).
+      Estático pode exigir abertura do código fonte.
+
+  - id: "LGPL-3.0"
+    name: "GNU Lesser General Public License v3.0"
+    reason: >
+      Similar à LGPL-2.1 mas com adição de proteções anti-tivoização
+      (dispositivos não podem bloquear updates do software LGPL).
+      Requer análise caso a caso.
+
+  - id: "MPL-2.0"
+    name: "Mozilla Public License 2.0"
+    reason: >
+      Copyleft de arquivo (file-level). Modificações nos arquivos MPL
+      devem ser disponibilizadas sob MPL, mas o código proprietário
+      que usa os arquivos MPL pode permanecer fechado.
+      Geralmente compatível com uso comercial se arquivos MPL não forem modificados.
+
+  - id: "CDDL-1.0"
+    name: "Common Development and Distribution License 1.0"
+    reason: >
+      Copyleft de arquivo similar ao MPL. Potencialmente incompatível
+      com GPL. Requer análise antes de uso.
+
+  - id: "EPL-1.0"
+    name: "Eclipse Public License 1.0"
+    reason: >
+      Copyleft "fraco" da Eclipse Foundation. Modificações devem ser
+      disponibilizadas mas código que usa a biblioteca EPL pode
+      permanecer proprietário.
+
+  - id: "EPL-2.0"
+    name: "Eclipse Public License 2.0"
+    reason: >
+      Versão atualizada da EPL-1.0 com opção de dual-license com GPL.
+      Requer análise do contexto de uso.
+
+  - id: "EUPL-1.2"
+    name: "European Union Public License 1.2"
+    reason: >
+      Licença copyleft da UE, com foco em interoperabilidade com outras
+      licenças. Obriga disponibilização do código-fonte de obras derivadas.
+      Requer análise legal especialmente para uso fora da UE.
+
+# ─────────────────────────────────────────────────────────────────────────────
+# LICENÇAS BLOQUEADAS
+# Proibidas sem exceção — a pipeline falha automaticamente.
+# ─────────────────────────────────────────────────────────────────────────────
+blocked:
+  - id: "GPL-2.0"
+    name: "GNU General Public License v2.0"
+    reason: >
+      Copyleft forte — qualquer software que incorpore código GPL v2 precisa
+      ser distribuído sob GPL v2. Incompatível com código proprietário.
+      A cláusula de distribuição tornaria obrigatória a abertura do código-fonte
+      do projeto todo se uma dependência GPL for incluída.
+
+  - id: "GPL-2.0-only"
+    name: "GNU General Public License v2.0 only"
+    reason: >
+      Mesmos motivos do GPL-2.0. Variante sem cláusula "or later versions".
+
+  - id: "GPL-2.0-or-later"
+    name: "GNU General Public License v2.0 or later"
+    reason: >
+      Mesmos motivos do GPL-2.0.
+
+  - id: "GPL-3.0"
+    name: "GNU General Public License v3.0"
+    reason: >
+      Copyleft forte — além das obrigações do GPL-2.0, adiciona proteções
+      contra DRM e tivoização. Completamente incompatível com uso em
+      software proprietário ou SaaS sem liberação do código-fonte completo.
+
+  - id: "GPL-3.0-only"
+    name: "GNU General Public License v3.0 only"
+    reason: "Mesmos motivos do GPL-3.0."
+
+  - id: "GPL-3.0-or-later"
+    name: "GNU General Public License v3.0 or later"
+    reason: "Mesmos motivos do GPL-3.0."
+
+  - id: "AGPL-3.0"
+    name: "GNU Affero General Public License v3.0"
+    reason: >
+      Copyleft mais restritivo que o GPL — o "distribution trigger" inclui
+      acesso via rede (SaaS). Ou seja: se você rodar software AGPL como
+      serviço web, precisa disponibilizar o código-fonte para os usuários.
+      Incompatível com qualquer modelo SaaS proprietário.
+
+  - id: "AGPL-3.0-only"
+    name: "GNU Affero General Public License v3.0 only"
+    reason: "Mesmos motivos do AGPL-3.0."
+
+  - id: "AGPL-3.0-or-later"
+    name: "GNU Affero General Public License v3.0 or later"
+    reason: "Mesmos motivos do AGPL-3.0."
+
+  - id: "SSPL-1.0"
+    name: "Server Side Public License v1"
+    reason: >
+      Licença criada pela MongoDB Inc. Requer que qualquer serviço que
+      use o software SSPL disponibilize o código-fonte completo de
+      TODA a stack que provê o serviço (incluindo infraestrutura).
+      Não aprovada pela OSI como open source. Efetivamente inviabiliza
+      qualquer uso em SaaS.
+
+  - id: "BUSL-1.1"
+    name: "Business Source License 1.1"
+    reason: >
+      Licença de source-available com restrição de uso comercial por
+      período definido (geralmente 4 anos, depois converte para open source).
+      Não é open source. Uso comercial requer compra de licença comercial.
+      Bloqueado por padrão — revisar individualmente se necessário.
+
+# ─────────────────────────────────────────────────────────────────────────────
+# CONFIGURAÇÕES DA PIPELINE
+# ─────────────────────────────────────────────────────────────────────────────
+pipeline:
+  # O que fazer quando uma licença bloqueada é encontrada
+  on_blocked_license: "fail"  # fail | warn
+
+  # O que fazer quando uma licença "requires_review" é encontrada
+  on_review_required: "warn"  # fail | warn
+
+  # O que fazer quando a licença é desconhecida (NOASSERTION)
+  on_unknown_license: "warn"  # fail | warn
+
+  # Salvar relatório de licenças como artifact
+  generate_report: true
+  report_format: "json"  # json | html | csv
+
+  # Exceções pontuais (licença bloqueada aprovada para pacote específico)
+  # Requires: aprovação do time jurídico + documentação de justificativa
+  exceptions: []
+  # Exemplo de exceção:
+  # exceptions:
+  #   - package: "some-gpl-lib"
+  #     version: "1.0.0"
+  #     license: "GPL-3.0"
+  #     approved_by: "legal-team@company.com"
+  #     approved_date: "2024-01-15"
+  #     justification: "Usado apenas em ferramenta interna de desenvolvimento, não distribuída"
+  #     expires: "2024-12-31"
