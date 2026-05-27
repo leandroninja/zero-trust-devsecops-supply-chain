@@ -1,0 +1,287 @@
+# Fortinet Network Segmentation Policies
+#
+# Baseado nos conceitos do Fortinet NSE 4 / NSE 5 e Certified Associate.
+# Implementa segmentação por zonas de segurança com inspeção de tráfego.
+#
+# Estrutura de zonas:
+#   EXTERNAL  → Internet / redes não confiáveis
+#   DMZ       → Serviços expostos (ingress, WAF, APIs públicas)
+#   INTERNAL  → Sistemas internos (backend, banco de dados)
+#   MGMT      → Rede de gerenciamento (acesso restrito)
+#
+# Referência: Fortinet NSE Certified Associate + NSE Fundamentals Cybersecurity
+
+---
+# Definição das zonas de segurança
+security_zones:
+  external:
+    name: "EXTERNAL"
+    description: "Zona externa — internet e redes não confiáveis"
+    trust_level: 0
+    interfaces:
+      - name: "wan1"
+        type: "wan"
+        ip: "dhcp"  # IP público dinâmico (em produção: IP fixo)
+      - name: "wan2"
+        type: "wan-backup"
+        ip: "dhcp"
+
+  dmz:
+    name: "DMZ"
+    description: "Zona desmilitarizada — serviços publicados com exposição controlada"
+    trust_level: 20
+    interfaces:
+      - name: "dmz"
+        type: "lan"
+        ip: "10.10.10.1/24"
+    # Serviços permitidos na DMZ
+    services:
+      - "HTTPS"     # porta 443 apenas
+      - "HTTP"      # porta 80 — redirectiona para 443
+      - "DNS"       # resolver DNS para a DMZ
+
+  internal:
+    name: "INTERNAL"
+    description: "Zona interna — sistemas backend, banco de dados, microserviços"
+    trust_level: 60
+    interfaces:
+      - name: "internal"
+        type: "lan"
+        ip: "10.20.0.1/16"
+    subnets:
+      api_tier: "10.20.1.0/24"
+      database_tier: "10.20.2.0/24"
+      cache_tier: "10.20.3.0/24"
+      worker_tier: "10.20.4.0/24"
+
+  management:
+    name: "MGMT"
+    description: "Rede de gerenciamento — acesso administrativo restrito"
+    trust_level: 80
+    interfaces:
+      - name: "mgmt"
+        type: "lan"
+        ip: "10.99.0.1/24"
+    # Acesso apenas por VPN + MFA
+    access_requirements:
+      - "vpn_required: true"
+      - "mfa_required: true"
+      - "jump_server_required: true"
+
+---
+# Políticas de firewall por zona
+firewall_policies:
+
+  # EXTERNAL → DMZ: apenas HTTPS e HTTP (com redirect)
+  - id: 100
+    name: "external-to-dmz-web"
+    from_zone: "EXTERNAL"
+    to_zone: "DMZ"
+    source_addresses:
+      - "all"  # qualquer IP externo
+    destination_addresses:
+      - "dmz-ingress-vip"  # Virtual IP do ingress
+    services:
+      - "HTTPS"
+      - "HTTP"
+    action: "accept"
+    security_profiles:
+      antivirus: "av-profile-strict"
+      webfilter: "webfilter-external"
+      ips: "ips-owasp-protection"
+      ssl_inspection: "deep-inspection"
+    nat: true
+    log_traffic: true
+    log_violation_traffic: true
+    comments: "Permite acesso web externo — todo tráfego inspecionado"
+
+  # EXTERNAL → DMZ: bloqueia TUDO mais
+  - id: 101
+    name: "external-to-dmz-deny"
+    from_zone: "EXTERNAL"
+    to_zone: "DMZ"
+    source_addresses:
+      - "all"
+    destination_addresses:
+      - "all"
+    services:
+      - "ALL"
+    action: "deny"
+    log_traffic: true
+    comments: "Deny-all para o que não foi explicitamente permitido acima"
+
+  # DMZ → INTERNAL: apenas API pode falar com backend
+  - id: 200
+    name: "dmz-to-internal-api"
+    from_zone: "DMZ"
+    to_zone: "INTERNAL"
+    source_addresses:
+      - "dmz-api-gateway"
+    destination_addresses:
+      - "internal-api-tier"  # 10.20.1.0/24
+    services:
+      - "custom-https-8080"
+    action: "accept"
+    security_profiles:
+      ips: "ips-internal-strict"
+      appcontrol: "appcontrol-api"
+    log_traffic: true
+    comments: "API gateway na DMZ acessa tier de API interno"
+
+  # DMZ → INTERNAL: bloqueia acesso direto ao banco
+  - id: 201
+    name: "dmz-to-internal-deny-db"
+    from_zone: "DMZ"
+    to_zone: "INTERNAL"
+    source_addresses:
+      - "all"
+    destination_addresses:
+      - "internal-database-tier"  # 10.20.2.0/24
+    services:
+      - "ALL"
+    action: "deny"
+    log_traffic: true
+    comments: "DMZ nunca acessa banco diretamente — passa pela API"
+
+  # INTERNAL tier API → Database
+  - id: 300
+    name: "internal-api-to-db"
+    from_zone: "INTERNAL"
+    to_zone: "INTERNAL"
+    source_addresses:
+      - "internal-api-tier"
+    destination_addresses:
+      - "internal-database-tier"
+    services:
+      - "custom-postgresql-5432"
+    action: "accept"
+    security_profiles:
+      ips: "ips-internal-strict"
+    log_traffic: true
+    comments: "API acessa PostgreSQL — tráfego inspecionado mesmo sendo interno"
+
+  # INTERNAL → EXTERNAL: egress controlado
+  - id: 400
+    name: "internal-egress-controlled"
+    from_zone: "INTERNAL"
+    to_zone: "EXTERNAL"
+    source_addresses:
+      - "internal-api-tier"
+    destination_addresses:
+      - "allowed-external-apis"  # lista de IPs/FQDNs externos aprovados
+    services:
+      - "HTTPS"
+    action: "accept"
+    security_profiles:
+      webfilter: "webfilter-egress"
+      ssl_inspection: "certificate-inspection"
+    log_traffic: true
+    comments: "Egress controlado — apenas para APIs externas aprovadas"
+
+  # INTERNAL → EXTERNAL: bloqueia tudo mais (incluindo exfiltração)
+  - id: 401
+    name: "internal-egress-deny"
+    from_zone: "INTERNAL"
+    to_zone: "EXTERNAL"
+    source_addresses:
+      - "all"
+    destination_addresses:
+      - "all"
+    services:
+      - "ALL"
+    action: "deny"
+    log_traffic: true
+    comments: "Bloqueia egress não autorizado — previne exfiltração de dados"
+
+---
+# Inspeção SSL/TLS
+ssl_inspection_profiles:
+
+  deep_inspection:
+    name: "deep-inspection"
+    description: "Inspeção completa com re-encrypt — para tráfego externo→DMZ"
+    type: "deep-inspection"
+    # Certificado CA interno para re-assinatura
+    ca_certificate: "fortinet-internal-ca"
+    # Não inspeciona domínios bancários e de saúde (privacidade + regulação)
+    ssl_exempt_categories:
+      - "financial"
+      - "health"
+      - "government"
+    # Bloqueia protocolos TLS antigos
+    ssl_min_version: "TLSv1.2"
+    ssl_cipher_suites:
+      - "TLS_AES_256_GCM_SHA384"
+      - "TLS_CHACHA20_POLY1305_SHA256"
+      - "TLS_AES_128_GCM_SHA256"
+      - "ECDHE-RSA-AES256-GCM-SHA384"
+    # Bloqueia certificados inválidos
+    invalid_server_cert: "block"
+    expired_server_cert: "block"
+    sni_server_cert_check: "enable"
+
+  certificate_inspection:
+    name: "certificate-inspection"
+    description: "Apenas verifica certificado — sem decrypt (para egress)"
+    type: "certificate-inspection"
+    # Valida mas não decripta — mais leve e menos invasivo
+    inspect_all_ports: true
+    ssl_min_version: "TLSv1.2"
+    expired_server_cert: "block"
+
+---
+# IPS Policies — mapeadas para OWASP Top 10
+ips_profiles:
+
+  owasp_protection:
+    name: "ips-owasp-protection"
+    description: "Proteção baseada no OWASP Top 10 — para tráfego externo"
+    extended_log: enable
+    signature_groups:
+      # A01: Broken Access Control
+      - name: "access-control-violations"
+        action: "block"
+        severity: ["critical", "high"]
+
+      # A02: Cryptographic Failures
+      - name: "weak-crypto"
+        action: "block"
+        severity: ["critical", "high", "medium"]
+
+      # A03: Injection (SQL, Command, LDAP)
+      - name: "injection-attacks"
+        action: "block"
+        severity: ["critical", "high"]
+
+      # A04: Insecure Design (SSRF, XXE)
+      - name: "ssrf-attacks"
+        action: "block"
+        severity: ["critical", "high"]
+
+      # A07: Auth & Session
+      - name: "brute-force"
+        action: "block"
+        severity: ["critical", "high", "medium"]
+        rate_limit:
+          requests: 10
+          period: 60  # 10 tentativas por minuto
+
+      # A08: Software & Data Integrity (supply chain)
+      - name: "malicious-download"
+        action: "block"
+        severity: ["critical", "high"]
+
+      # A09: Security Logging & Monitoring
+      # (configurado no Logging section — tudo logado)
+
+      # A10: SSRF
+      - name: "server-side-request-forgery"
+        action: "block"
+        severity: ["critical", "high"]
+
+    custom_signatures:
+      # Bloqueia User-Agents conhecidos de scanners
+      - id: "custom-scanner-block"
+        pattern: "User-Agent.*(nikto|sqlmap|nmap|masscan|zgrab)"
+        action: "block"
+        comment: "Bloqueia scanners de vulnerabilidade conhecidos"

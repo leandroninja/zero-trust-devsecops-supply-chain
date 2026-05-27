@@ -1,0 +1,248 @@
+# Fortinet Threat Protection Policies
+#
+# Camada de proteção contra ameaças — antivírus, web filtering,
+# application control e proteção contra botnets.
+#
+# Funciona em conjunto com as políticas de segmentação de rede.
+# Cada política de firewall referencia um ou mais desses profiles.
+#
+# Referência: Fortinet NSE Certified Associate
+#             FortiOS 7.x Administration Guide
+
+---
+# Antivirus Profiles
+antivirus_profiles:
+
+  av_strict:
+    name: "av-profile-strict"
+    description: "Inspeção antivírus para tráfego externo — máxima cobertura"
+    comment: "Usado em todas as conexões vindas de EXTERNAL"
+
+    http:
+      options:
+        - "scan"
+        - "quarantine"
+      archive_scan: enable
+      # Bloqueia arquivos executáveis vindos da internet sem scanning
+      block_encrypted_archives: enable
+      outbreak_prevention:
+        external_blocklist: enable
+        ftgd_service: enable
+
+    ftp:
+      options:
+        - "scan"
+      archive_scan: enable
+
+    smtp:
+      options:
+        - "scan"
+      executables: "block"  # executáveis em email sempre bloqueados
+      archive_scan: enable
+
+    # Tamanho máximo de arquivo para scan (arquivos maiores são bloqueados)
+    av_scan:
+      max_file_size: 10  # MB
+
+    # Proteção contra ameaças emergentes via FortiGuard
+    fortiguard:
+      file_query: enable
+      outbreak_prevention: enable
+
+  av_internal:
+    name: "av-profile-internal"
+    description: "Scan leve para tráfego interno — apenas arquivos suspeitos"
+    http:
+      options: ["scan"]
+      archive_scan: disable  # performance — tráfego interno já passou pelo strict
+    outbreak_prevention:
+      external_blocklist: enable
+
+---
+# Web Filtering Profiles
+webfilter_profiles:
+
+  webfilter_external:
+    name: "webfilter-external"
+    description: "Filtro web para tráfego externo entrando na DMZ"
+    comment: "Bloqueia categorias de risco alto para a aplicação"
+    inspection_mode: "proxy"
+
+    fortiguard:
+      # Categorias bloqueadas (numeração FortiGuard)
+      categories:
+        # Malware e ameaças
+        - category: "malicious-websites"
+          action: "block"
+        - category: "phishing"
+          action: "block"
+        - category: "spam-urls"
+          action: "block"
+        - category: "botnet"
+          action: "block"
+        # Conteúdo inadequado para ambiente corporativo
+        - category: "illegal-or-unethical"
+          action: "block"
+        - category: "hacking"
+          action: "block"
+          comment: "Sites de exploits e ferramentas de hacking"
+        - category: "proxy-avoidance"
+          action: "block"
+          comment: "Anonimizadores que tentam burlar filtros"
+        # Permitidas com monitoramento
+        - category: "social-networking"
+          action: "monitor"
+        - category: "streaming"
+          action: "monitor"
+
+    # Limite de downloads (previne exfiltração via upload grande)
+    post_action: block_invalid_urls
+    log_all_urls: enable
+
+  webfilter_egress:
+    name: "webfilter-egress"
+    description: "Filtro para egress da rede interna → internet"
+    comment: "Controla o que os serviços internos podem acessar externamente"
+    inspection_mode: "proxy"
+
+    fortiguard:
+      categories:
+        - category: "malicious-websites"
+          action: "block"
+        - category: "botnet"
+          action: "block"
+        - category: "phishing"
+          action: "block"
+        - category: "hacking"
+          action: "block"
+        # Serviços de armazenamento em nuvem — permitir apenas os aprovados
+        - category: "cloud-storage"
+          action: "monitor"
+
+    # Allowlist de domínios externos aprovados para uso pelos serviços
+    url_filter:
+      entries:
+        - url: "api.github.com"
+          type: "wildcard"
+          action: "allow"
+          comment: "GitHub API para CI/CD"
+        - url: "*.amazonaws.com"
+          type: "wildcard"
+          action: "allow"
+          comment: "AWS endpoints"
+        - url: "*.azure.com"
+          type: "wildcard"
+          action: "allow"
+          comment: "Azure endpoints"
+        - url: "ghcr.io"
+          type: "simple"
+          action: "allow"
+          comment: "GitHub Container Registry"
+        - url: "registry.npmjs.org"
+          type: "simple"
+          action: "allow"
+          comment: "npm registry"
+        - url: "pypi.org"
+          type: "simple"
+          action: "allow"
+          comment: "PyPI"
+
+---
+# Application Control
+application_control:
+
+  appcontrol_api:
+    name: "appcontrol-api"
+    description: "Controle de aplicação para tráfego de API"
+    comment: "Permite apenas protocolos de API legítimos"
+
+    application_list:
+      # Bloqueia protocolos de tunelamento que podem bypassar controles
+      - id: 1
+        name: "DNS-over-HTTPS"
+        action: "block"
+        comment: "DoH pode bypassar o DNS filtering — usar DNS interno"
+      - id: 2
+        name: "Tor"
+        action: "block"
+        comment: "Tor é usado para anonimização — bloqueado"
+      - id: 3
+        name: "BitTorrent"
+        action: "block"
+      # Permite protocolos de API padrão
+      - id: 10
+        name: "HTTP/HTTPS"
+        action: "allow"
+      - id: 11
+        name: "gRPC"
+        action: "allow"
+        comment: "Comunicação entre microserviços"
+      - id: 12
+        name: "WebSocket"
+        action: "allow"
+
+    # Detecta e bloqueia aplicações que tentam se disfarçar de HTTP
+    application_categories:
+      - category: "proxy"
+        action: "block"
+      - category: "remote-access"
+        action: "monitor"  # log mas não bloqueia para permitir acesso legítimo
+
+---
+# Botnet Protection
+botnet_protection:
+
+  botnet_profile:
+    name: "botnet-protection-default"
+    description: "Proteção contra comunicação com C&C servers (botnets)"
+    comment: "Bloqueia callback para servidores de comando e controle conhecidos"
+
+    # FortiGuard Botnet Database
+    scan_ports: "all"
+    block_malicious_urls: enable
+
+    # Bloqueia IPs de C&C conhecidos (atualizado automaticamente via FortiGuard)
+    botnet_c2:
+      action: "block"
+      log: enable
+      alert: enable
+
+    # Detecta comportamento de botnet (beacon timing, volume de conexões)
+    behavior_analysis:
+      enable: true
+      # Alerta se um host interno faz muitas conexões externas em curto período
+      connection_threshold:
+        max_connections_per_minute: 100
+        action: "alert"  # só alerta — não bloqueia automaticamente
+
+    # Integração com FortiSandbox para análise de arquivos suspeitos
+    # TODO: configurar FortiSandbox endpoint quando disponível
+    sandbox:
+      enable: false
+      # sandbox_server: "fortisandbox.internal"
+
+---
+# Logging e monitoramento
+logging:
+  # Envia logs para o FortiAnalyzer (ou SIEM externo via syslog)
+  fortianalyzer:
+    enable: true
+    server: "fortianalyzer.mgmt.internal"
+    upload_interval: 1  # minuto
+
+  syslog:
+    # Backup de logs para SIEM externo (Azure Sentinel, Splunk, etc.)
+    server: "siem.internal"
+    port: 514
+    protocol: "udp"
+    facility: "local7"
+
+  # O que logar
+  log_settings:
+    forward_traffic: enable
+    local_traffic: enable
+    sniffer_traffic: disable
+    anomaly: enable
+    voip: disable
+    # Inclui o payload nas entradas de log de violação (para forensics)
+    extended_log: enable

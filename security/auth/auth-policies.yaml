@@ -1,0 +1,244 @@
+# Políticas de Autenticação e Autorização
+#
+# Baseado nos conceitos do LFEL1004 — Authentication & Authorization for Web APIs.
+# Define as regras de validação de JWT, OAuth2, mTLS e rotação de API keys.
+#
+# Implementado via:
+#   - Istio EnvoyFilter para JWT validation no sidecar
+#   - OPA para validação de scopes e claims
+#   - Kubernetes Secrets para chaves (com rotação automática via External Secrets)
+#
+# Referência: LFEL1004 — Authentication & Authorization for Web/API
+
+---
+# ─── JWT Validation ───────────────────────────────────────────────────────────
+
+jwt_validation:
+  issuer: "https://auth.zero-trust-app.example.com"
+  audience:
+    - "zero-trust-api"
+    - "zero-trust-internal"
+
+  # Chaves públicas para verificação (JWKS endpoint)
+  jwks_uri: "https://auth.zero-trust-app.example.com/.well-known/jwks.json"
+
+  # Tempo de tolerância para relógio diferente entre servidores (clock skew)
+  clock_skew_seconds: 30
+
+  # Campos obrigatórios no JWT
+  required_claims:
+    - "sub"   # subject — identidade do usuário/serviço
+    - "iat"   # issued at — quando foi emitido
+    - "exp"   # expiration — quando expira
+    - "jti"   # JWT ID — para prevenir replay attacks
+    - "scope" # escopos autorizados
+
+  # Algoritmos aceitos
+  # Nunca aceitar: "none", "HS256" (chave simétrica), algoritmos fracos
+  allowed_algorithms:
+    - "RS256"  # RSA + SHA-256 — padrão para APIs públicas
+    - "ES256"  # ECDSA + SHA-256 — mais eficiente, bom para mobile
+    - "RS384"  # RSA + SHA-384 — maior segurança se necessário
+
+  # Rejeitar sempre
+  rejected_algorithms:
+    - "none"
+    - "HS256"  # chave simétrica — quem tem a chave pode assinar qualquer token
+    - "HS384"
+    - "HS512"
+
+  # Tempo de vida máximo do token de acesso
+  # Curto por padrão — usa refresh token para renovar
+  max_access_token_ttl: 3600  # 1 hora
+
+  # Refresh tokens têm vida mais longa mas são one-use
+  max_refresh_token_ttl: 86400  # 24 horas
+
+  # Blacklist de tokens revogados
+  # Implementado via Redis com TTL igual ao restante de validade do token
+  token_revocation:
+    enabled: true
+    store: "redis"  # redis | database
+    redis_key_prefix: "revoked:token:"
+    check_on_every_request: true
+
+---
+# ─── OAuth2 Scopes ────────────────────────────────────────────────────────────
+
+oauth2:
+  grant_types_allowed:
+    - "authorization_code"  # para usuários humanos com PKCE
+    - "client_credentials"  # para serviço-a-serviço
+    # NUNCA: "implicit" (deprecado no OAuth2.1), "password" (expõe credenciais)
+
+  # PKCE obrigatório para authorization_code
+  pkce:
+    required: true
+    code_challenge_methods:
+      - "S256"  # SHA-256 — obrigatório
+      # "plain" não é permitido — não oferece proteção real
+
+  # Escopos disponíveis e o que cada um permite
+  scopes:
+    - name: "api:read"
+      description: "Leitura de dados da API"
+      endpoints:
+        - "GET /api/v1/*"
+
+    - name: "api:write"
+      description: "Escrita e modificação via API"
+      endpoints:
+        - "POST /api/v1/*"
+        - "PUT /api/v1/*"
+        - "PATCH /api/v1/*"
+
+    - name: "api:delete"
+      description: "Exclusão de recursos"
+      requires_additional_mfa: true  # operação destrutiva — exige MFA adicional
+      endpoints:
+        - "DELETE /api/v1/*"
+
+    - name: "admin:users"
+      description: "Gerenciamento de usuários — restrito a admins"
+      endpoints:
+        - "* /api/v1/admin/users/*"
+
+    - name: "service:internal"
+      description: "Escopo para serviços internos (service accounts)"
+      # Só pode ser concedido via client_credentials, não para usuários
+      grant_type_restriction: "client_credentials"
+
+  # Validação de audience — token deve ter o audience correto
+  # Previne uso de token de um serviço em outro
+  enforce_audience_validation: true
+
+---
+# ─── mTLS Requirements ────────────────────────────────────────────────────────
+
+mtls:
+  # mTLS obrigatório para comunicação serviço-a-serviço
+  # (implementado via Istio PeerAuthentication STRICT)
+  service_to_service:
+    required: true
+    implementation: "istio"
+    min_tls_version: "TLSv1.3"  # TLS 1.3 tem handshake mais rápido e mais seguro
+
+  # Para clientes externos (APIs públicas)
+  external_clients:
+    required: false  # mTLS opcional para clientes externos (UX)
+    # Quando o cliente apresenta certificado cliente, valida e adiciona info ao request
+    certificate_forwarding: true  # encaminha info do cert para a aplicação via header
+
+  # Cipher suites permitidos
+  cipher_suites:
+    tls13:
+      - "TLS_AES_256_GCM_SHA384"
+      - "TLS_CHACHA20_POLY1305_SHA256"
+      - "TLS_AES_128_GCM_SHA256"
+    tls12:  # fallback quando TLS 1.3 não disponível
+      - "ECDHE-ECDSA-AES256-GCM-SHA384"
+      - "ECDHE-RSA-AES256-GCM-SHA384"
+      - "ECDHE-ECDSA-CHACHA20-POLY1305"
+
+  # Renovação automática de certificados
+  certificate_rotation:
+    # Certificados de workload via SPIRE (TTL curto)
+    workload_cert_ttl: "1h"
+    # Rotaciona quando sobra 20% do tempo de vida
+    rotation_threshold: 0.2
+    # CA root renovada trimestralmente
+    ca_cert_ttl: "90d"
+
+---
+# ─── API Key Policy ───────────────────────────────────────────────────────────
+
+api_keys:
+  # API keys para integração com sistemas externos que não suportam OAuth2
+  enabled: true
+
+  # Formato da API key (prefixo para identificação fácil em logs)
+  # Permite detectar se uma key vazou em um log ou repositório
+  key_format: "ztapp_{random_32_chars}"
+  # Exemplo: ztapp_a1b2c3d4e5f6g7h8i9j0k1l2m3n4o5p6
+
+  # Rotação obrigatória
+  rotation_policy:
+    max_age_days: 90  # keys expiram em 90 dias
+    rotation_reminder_days: 14  # avisa 2 semanas antes
+    grace_period_hours: 48  # aceita key antiga por 48h após rotação (sem downtime)
+
+  # Hash as keys no banco — nunca armazenar plaintext
+  storage:
+    algorithm: "argon2id"  # mais resistente a GPU cracking que bcrypt
+    memory_cost: 65536
+    time_cost: 3
+    parallelism: 4
+
+  # Scopes associados à API key
+  # API keys têm scopes mais restritos que OAuth2 tokens
+  allowed_scopes:
+    - "api:read"
+    - "api:write"
+    # admin:users NÃO permitido via API key — requer OAuth2
+
+  # Rate limiting por API key
+  rate_limiting:
+    default_rpm: 1000  # requests por minuto
+    burst: 100
+    # Keys classificadas como "premium" têm limite maior
+    premium_rpm: 10000
+
+---
+# ─── Rate Limiting & Brute Force Protection ────────────────────────────────────
+
+rate_limiting:
+  # Login / token endpoint
+  auth_endpoints:
+    max_requests_per_minute: 10
+    block_after_failures: 5
+    block_duration_minutes: 15
+    # Após 3 bloqueios consecutivos, requer resolução manual
+    escalation_after_blocks: 3
+
+  # API geral
+  api_endpoints:
+    max_requests_per_minute: 1000
+    max_requests_per_hour: 10000
+
+  # Implementação via Redis (distributed rate limiting)
+  implementation:
+    backend: "redis"
+    algorithm: "token_bucket"  # ou "sliding_window"
+    key_strategy: "ip+user_id"  # combina IP e usuário para evitar bypass
+
+---
+# ─── Auditoria e Logging ──────────────────────────────────────────────────────
+
+audit_logging:
+  # Logar todas as tentativas de autenticação (sucesso e falha)
+  log_auth_attempts: true
+  log_failed_attempts: true
+  log_token_issuance: true
+  log_token_revocation: true
+  log_scope_violations: true  # quando alguém tenta acessar algo sem o scope certo
+
+  # Campos obrigatórios em cada log de autenticação
+  required_fields:
+    - "timestamp"
+    - "event_type"   # login_success, login_failure, token_expired, etc.
+    - "user_id"      # ou service_account_id
+    - "ip_address"
+    - "user_agent"
+    - "request_id"   # correlation ID para tracing
+    - "scopes_requested"
+    - "scopes_granted"
+
+  # NÃO logar nunca
+  never_log:
+    - "password"
+    - "api_key"    # nem o hash — só o key_id (prefixo)
+    - "private_key"
+    - "client_secret"
+
+  # Retenção de logs de auditoria
+  retention_days: 365  # 1 ano — compliance com LGPD / GDPR
