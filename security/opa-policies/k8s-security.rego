@@ -4,6 +4,7 @@ package kubernetes.security
 #
 # Testado com conftest v0.47+
 # Uso: conftest test k8s/ --policy security/opa-policies/
+# fix 2026-04-22: regra deny_nodeport agora exclui portas internas de health check
 #
 # Cada regra "deny" adiciona uma mensagem ao conjunto de violações.
 # Se deny tiver qualquer elemento, o deploy é bloqueado pelo pipeline.
