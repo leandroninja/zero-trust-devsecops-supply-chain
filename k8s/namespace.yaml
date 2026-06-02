@@ -1,0 +1,128 @@
+# Kubernetes Namespaces
+#
+# Labels são importantes para as NetworkPolicies — o namespaceSelector
+# nos NetworkPolicy usa os labels do namespace para saber o que selecionar.
+#
+# Label zero-trust/env é usada pelas network policies para identificar
+# namespaces de aplicação.
+
+---
+# Namespace de produção
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: production
+  labels:
+    # Labels para NetworkPolicy selectors
+    kubernetes.io/metadata.name: production
+    zero-trust/env: production
+    zero-trust/tier: app
+
+    # Label para Istio sidecar injection automática em todos os pods
+    istio-injection: enabled
+
+    # Usado pela OPA/Gatekeeper para aplicar políticas neste namespace
+    admission.zero-trust/policy-group: production
+
+  annotations:
+    zero-trust/owner: "platform-team"
+    zero-trust/purpose: "Ambiente de produção — acesso restrito"
+
+---
+# Namespace de staging
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: staging
+  labels:
+    kubernetes.io/metadata.name: staging
+    zero-trust/env: staging
+    zero-trust/tier: app
+    istio-injection: enabled
+    admission.zero-trust/policy-group: staging
+
+  annotations:
+    zero-trust/owner: "platform-team"
+    zero-trust/purpose: "Ambiente de staging — testes de integração e DAST"
+
+---
+# Namespace para o ingress controller
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: ingress-nginx
+  labels:
+    kubernetes.io/metadata.name: ingress-nginx
+    zero-trust/tier: ingress
+    # O ingress controller tem injeção de sidecar desabilitada
+    # para evitar loops de roteamento Envoy→Envoy
+    istio-injection: disabled
+
+---
+# Namespace para monitoring (Prometheus, Grafana)
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: monitoring
+  labels:
+    kubernetes.io/metadata.name: monitoring
+    zero-trust/tier: observability
+    istio-injection: enabled
+
+---
+# Namespace para SPIRE
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: spire
+  labels:
+    kubernetes.io/metadata.name: spire
+    zero-trust/tier: identity
+    # SPIRE não usa sidecar Istio — ele É a camada de identidade
+    istio-injection: disabled
+
+---
+# ResourceQuota para production — previne consumo excessivo de recursos
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: production-quota
+  namespace: production
+spec:
+  hard:
+    # Limites de CPU e memória totais no namespace
+    requests.cpu: "4"
+    requests.memory: 4Gi
+    limits.cpu: "8"
+    limits.memory: 8Gi
+    # Limites de objetos
+    pods: "20"
+    services: "10"
+    persistentvolumeclaims: "5"
+    # Sem NodePort e sem LoadBalancer — tudo via Ingress
+    services.nodeports: "0"
+    services.loadbalancers: "0"
+
+---
+# LimitRange — define defaults para containers sem limits definidos
+# (os OPA policies bloqueiam containers sem limits, mas como fallback)
+apiVersion: v1
+kind: LimitRange
+metadata:
+  name: production-limits
+  namespace: production
+spec:
+  limits:
+    - type: Container
+      default:
+        cpu: "200m"
+        memory: "256Mi"
+      defaultRequest:
+        cpu: "100m"
+        memory: "128Mi"
+      max:
+        cpu: "2"
+        memory: "2Gi"
+      min:
+        cpu: "50m"
+        memory: "64Mi"

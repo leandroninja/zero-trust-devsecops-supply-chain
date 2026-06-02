@@ -1,0 +1,272 @@
+# Kubernetes Deployment — Zero Trust App
+#
+# Todas as security best practices do CIS Kubernetes Benchmark implementadas:
+#   - securityContext completo (pod e container level)
+#   - runAsNonRoot: true + UID específico
+#   - readOnlyRootFilesystem: true
+#   - allowPrivilegeEscalation: false
+#   - Resources limits e requests definidos
+#   - Liveness e readiness probes
+#   - Sem hostNetwork, hostPID, hostIPC
+#
+# Para aplicar: kubectl apply -f k8s/deployment.yaml
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: zero-trust-app
+  namespace: production
+  labels:
+    app: zero-trust-app
+    tier: api
+    version: "1.0.0"
+    security.zero-trust/compliant: "true"
+  annotations:
+    # Registra o commit que gerou essa versão do deployment
+    deployment.kubernetes.io/revision: "1"
+    security.zero-trust/sbom-location: "ghcr.io/leandroninja/zero-trust-app:1.0.0.sbom"
+    security.zero-trust/slsa-level: "2"
+
+spec:
+  replicas: 2  # mínimo 2 para HA — com PodAntiAffinity para spreads entre nodes
+
+  selector:
+    matchLabels:
+      app: zero-trust-app
+      tier: api
+
+  # Estratégia de atualização — RollingUpdate garante 0 downtime
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0  # nunca derruba pod antes de ter o novo pronto
+      maxSurge: 1        # sobe 1 pod novo antes de derrubar o antigo
+
+  template:
+    metadata:
+      labels:
+        app: zero-trust-app
+        tier: api
+        version: "1.0.0"
+      annotations:
+        # Força restart quando secrets mudam (via ConfigMap/Secret hash)
+        # kubectl rollout restart deployment/zero-trust-app
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "9090"
+        prometheus.io/path: "/metrics"
+
+        # Istio sidecar injection
+        sidecar.istio.io/inject: "true"
+
+    spec:
+      # Service Account com permissões mínimas (definida em rbac-policies.yaml)
+      serviceAccountName: api-service-account
+
+      # Não monta o service account token automaticamente
+      # (configurado no ServiceAccount também)
+      automountServiceAccountToken: false
+
+      # Security context no nível do Pod
+      # Aplica para todos os containers no pod
+      securityContext:
+        # Todos os containers rodam como não-root
+        runAsNonRoot: true
+        # UID/GID definidos — mesmo que os do Dockerfile
+        runAsUser: 10001
+        runAsGroup: 10001
+        # Garante que arquivos criados em volumes pertencem ao GID da app
+        fsGroup: 10001
+        # Perfil seccomp — filtra syscalls permitidas pelo kernel
+        # RuntimeDefault é o perfil padrão do containerd/Docker — boa prática
+        seccompProfile:
+          type: RuntimeDefault
+
+      # Não usa rede do host — cada pod tem seu próprio network namespace
+      hostNetwork: false
+      # Não compartilha PID namespace com o host
+      hostPID: false
+      # Não compartilha IPC namespace com o host
+      hostIPC: false
+
+      # Distribui pods em nodes diferentes para HA
+      affinity:
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            - labelSelector:
+                matchExpressions:
+                  - key: app
+                    operator: In
+                    values:
+                      - zero-trust-app
+              topologyKey: "kubernetes.io/hostname"
+
+      # Tolera interrupções de nodes durante manutenção
+      tolerations:
+        - key: "node.kubernetes.io/not-ready"
+          operator: "Exists"
+          effect: "NoExecute"
+          tolerationSeconds: 30
+
+      containers:
+        - name: app
+          # Tag específica — nunca :latest
+          # Em produção usar digest: @sha256:abc123...
+          image: ghcr.io/leandroninja/zero-trust-devsecops-supply-chain/zero-trust-app:1.0.0
+
+          imagePullPolicy: Always  # verifica se a imagem mudou a cada pod start
+
+          ports:
+            - name: http
+              containerPort: 8080
+              protocol: TCP
+            - name: metrics
+              containerPort: 9090
+              protocol: TCP
+
+          # Security context no nível do container
+          # Mais específico que o do Pod — sobrescreve onde necessário
+          securityContext:
+            # Corre como UID 10001 (definido no Dockerfile também)
+            runAsUser: 10001
+            runAsNonRoot: true
+            # Filesystem root é read-only
+            # A aplicação deve usar /tmp ou volumes montados para escrita
+            readOnlyRootFilesystem: true
+            # Nunca permite elevação de privilégios via setuid/sudo
+            allowPrivilegeEscalation: false
+            # Remove todas as Linux capabilities do container
+            # Adiciona apenas o necessário (nenhuma nesse caso)
+            capabilities:
+              drop:
+                - ALL
+              # add: [] — sem capabilities adicionais
+
+          # Variáveis de ambiente — valores sensíveis vêm de Secrets
+          env:
+            - name: ENV
+              value: "production"
+            - name: LOG_LEVEL
+              value: "info"
+            - name: PORT
+              value: "8080"
+            # JWT secret do Kubernetes Secret (External Secrets Operator → Azure Key Vault)
+            - name: JWT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: app-jwt-secret
+                  key: jwt-secret
+            # Credenciais do banco
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: app-db-credentials
+                  key: connection-string
+
+          # Resources — obrigatório para scheduler funcionar corretamente
+          # e para evitar que um container monopolize CPU/memória do node
+          resources:
+            requests:
+              cpu: "100m"     # 0.1 CPU — mínimo garantido
+              memory: "128Mi" # 128MB — mínimo garantido
+            limits:
+              cpu: "500m"     # 0.5 CPU — máximo
+              memory: "256Mi" # 256MB — OOM kill se exceder
+
+          # Liveness Probe — se falhar, o pod é reiniciado
+          # Detecta quando a aplicação travou mas o processo ainda existe
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+              scheme: HTTP
+            initialDelaySeconds: 15  # aguarda 15s antes de começar a verificar
+            periodSeconds: 30        # verifica a cada 30s
+            timeoutSeconds: 5        # timeout de 5s
+            failureThreshold: 3      # reinicia após 3 falhas consecutivas
+            successThreshold: 1
+
+          # Readiness Probe — se falhar, pod sai do load balancer (não recebe tráfego)
+          # Diferente da liveness: o pod NÃO é reiniciado, só removido do balancer
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+              scheme: HTTP
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+            successThreshold: 1
+
+          # Startup Probe — dá mais tempo para a aplicação inicializar
+          # Evita que liveness mate o pod durante o cold start
+          startupProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            failureThreshold: 12  # 5s * 12 = 60s para a app inicializar
+
+          # Volume mounts — /tmp precisa ser writable mesmo com readOnlyRootFilesystem
+          volumeMounts:
+            - name: tmp-dir
+              mountPath: /tmp/app
+            - name: app-config
+              mountPath: /app/config
+              readOnly: true
+
+      # Volumes
+      volumes:
+        # tmpfs para arquivos temporários — não persiste, não é disco
+        - name: tmp-dir
+          emptyDir:
+            medium: Memory  # RAM — mais rápido e não deixa rastros em disco
+            sizeLimit: 64Mi
+
+        # ConfigMap com configuração não-sensível
+        - name: app-config
+          configMap:
+            name: app-config
+
+      # Graceful shutdown — espera conexões ativas terminarem
+      terminationGracePeriodSeconds: 30
+
+---
+# Service — expõe o deployment internamente no cluster
+apiVersion: v1
+kind: Service
+metadata:
+  name: zero-trust-app
+  namespace: production
+  labels:
+    app: zero-trust-app
+spec:
+  type: ClusterIP  # nunca NodePort ou LoadBalancer diretamente — use Ingress
+  selector:
+    app: zero-trust-app
+    tier: api
+  ports:
+    - name: http
+      port: 80
+      targetPort: http
+      protocol: TCP
+    - name: metrics
+      port: 9090
+      targetPort: metrics
+      protocol: TCP
+
+---
+# PodDisruptionBudget — garante que ao menos 1 replica está rodando durante
+# manutenção de nodes (kubectl drain)
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: zero-trust-app-pdb
+  namespace: production
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: zero-trust-app
