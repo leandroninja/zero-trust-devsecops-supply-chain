@@ -1,0 +1,198 @@
+name: PR Security Checks
+
+on:
+  pull_request:
+    branches: [main, develop]
+
+# Evita rodar múltiplas vezes no mesmo PR
+concurrency:
+  group: pr-security-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  # ─────────────────────────────────────
+  # Verificação de secrets vazados
+  # ─────────────────────────────────────
+  secret-scan:
+    name: Gitleaks - Secret Scan
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # histórico completo pra pegar diff do PR todo
+
+      - name: Gitleaks scan
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITLEAKS_LICENSE: ${{ secrets.GITLEAKS_LICENSE }}
+        with:
+          args: >-
+            --config=.gitleaks.toml
+            --baseline-path=.gitleaks-baseline.json
+            --report-format=sarif
+            --report-path=gitleaks-report.sarif
+
+      - name: Upload resultado Gitleaks
+        uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with:
+          sarif_file: gitleaks-report.sarif
+          category: gitleaks
+
+  # ─────────────────────────────────────
+  # Lint do Dockerfile
+  # ─────────────────────────────────────
+  dockerfile-lint:
+    name: Hadolint - Dockerfile
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Hadolint
+        uses: hadolint/hadolint-action@v3.1.0
+        with:
+          dockerfile: app/Dockerfile
+          format: sarif
+          output-file: hadolint-results.sarif
+          no-fail: false
+          # Nível de falha: error para regras de segurança, warning para boas práticas
+          failure-threshold: error
+          ignore: DL3008  # pin de versão de pacotes apt — tratado no build
+
+      - name: Upload resultado Hadolint
+        uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with:
+          sarif_file: hadolint-results.sarif
+          category: hadolint
+
+      - name: Comentário no PR com resultado
+        uses: actions/github-script@v7
+        if: failure()
+        with:
+          script: |
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: '## Hadolint falhou\nO Dockerfile tem problemas de segurança. Veja os detalhes na aba **Security** do repositório.'
+            })
+
+  # ─────────────────────────────────────
+  # Checkov — IaC Security
+  # ─────────────────────────────────────
+  iac-scan:
+    name: Checkov - IaC Security
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Checkov - Terraform
+        uses: bridgecrewio/checkov-action@v12
+        with:
+          directory: terraform/
+          framework: terraform
+          output_format: sarif
+          output_file_path: checkov-terraform.sarif
+          # Ignora checks que não se aplicam ao ambiente local de dev
+          skip_check: CKV_AZURE_999  # placeholder — ajustar conforme necessidade
+          soft_fail: false
+
+      - name: Checkov - Kubernetes
+        uses: bridgecrewio/checkov-action@v12
+        with:
+          directory: k8s/
+          framework: kubernetes
+          output_format: sarif
+          output_file_path: checkov-k8s.sarif
+          soft_fail: false
+
+      - name: Upload Checkov Terraform
+        uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with:
+          sarif_file: checkov-terraform.sarif
+          category: checkov-terraform
+
+      - name: Upload Checkov Kubernetes
+        uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with:
+          sarif_file: checkov-k8s.sarif
+          category: checkov-k8s
+
+  # ─────────────────────────────────────
+  # Dependency Review — detecta novas
+  # dependências vulneráveis no PR
+  # ─────────────────────────────────────
+  dependency-review:
+    name: Dependency Review
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Dependency Review
+        uses: actions/dependency-review-action@v4
+        with:
+          # Bloqueia dependências com licenças incompatíveis
+          deny-licenses: GPL-2.0, GPL-3.0, AGPL-3.0, SSPL-1.0
+          # Bloqueia vulnerabilidades de alta severidade
+          fail-on-severity: high
+          # Avisa sobre vulnerabilidades moderadas
+          warn-on-openssf-scorecard-level: 3
+          comment-summary-in-pr: always
+
+  # ─────────────────────────────────────
+  # Resultado consolidado do PR
+  # ─────────────────────────────────────
+  pr-security-summary:
+    name: Security Summary
+    runs-on: ubuntu-latest
+    needs:
+      - secret-scan
+      - dockerfile-lint
+      - iac-scan
+      - dependency-review
+    if: always()
+
+    steps:
+      - name: Verificar resultado de todos os checks
+        run: |
+          echo "Resultado dos checks de segurança do PR:"
+          echo "  Gitleaks (secrets):  ${{ needs.secret-scan.result }}"
+          echo "  Hadolint (Dockerfile): ${{ needs.dockerfile-lint.result }}"
+          echo "  Checkov (IaC):       ${{ needs.iac-scan.result }}"
+          echo "  Dependency Review:   ${{ needs.dependency-review.result }}"
+
+          # Falha se qualquer check crítico falhou
+          if [ "${{ needs.secret-scan.result }}" = "failure" ] || \
+             [ "${{ needs.dockerfile-lint.result }}" = "failure" ] || \
+             [ "${{ needs.iac-scan.result }}" = "failure" ] || \
+             [ "${{ needs.dependency-review.result }}" = "failure" ]; then
+            echo ""
+            echo "✗ Um ou mais checks de segurança falharam. Revise os problemas antes do merge."
+            exit 1
+          fi
+
+          echo "✓ Todos os checks de segurança passaram"
